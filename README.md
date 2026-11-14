@@ -44,16 +44,22 @@ All of it read-only. This repository never writes to a station.
 
 ## Drop your Niagara SMS license
 
-Niagara's SMS notification is a **paid add-on**. If all you need is "an alarm
-happens, my phone rings", this repository replaces that line item entirely:
+Niagara's SMS notification is a **paid add-on**. If your only requirement is
+"an alarm fires, a phone rings", you do **not** need that add-on — this reader
+plus a gateway you already own will get you there:
 
 ```
-Before:  Niagara SMS license  +  modem  +  carrier SIM  +  per-seat config
-After:   this reader  +  any SMS/voice gateway you already own
+Niagara SMS add-on:   per-station license  +  modem  +  SIM  +  per-alarm config
+This route:           this reader  +  any SMS/voice gateway you already own
 ```
 
 You keep full control of the message format, the routing rules and the escalation
-policy. Nothing about it is tied to Tridium licensing.
+policy. Nothing about it is tied to a Tridium license, and nothing about it stops
+you from using the official add-on alongside it if that suits you better.
+
+There is also an operational reason to prefer it: messages leave through a
+gateway you control, so alarm text and site identifiers never pass through a
+third-party messaging provider unless you choose one.
 
 See [Notification channels](#notification-channels) for wiring it to SMS, voice
 calls, WhatsApp, WeChat or anything else.
@@ -641,8 +647,9 @@ poller, queue, routing rules, SMS and voice gateways — is integration work.
 If you want help with any of it:
 
 - **Multi-station aggregation** — one feed from many JACE / Edge stations
-- **SMS and voice delivery** — including a self-hosted LTE module that speaks
-  AT commands directly, so no SMS license and no per-message provider markup
+- **SMS and voice delivery** — including an on-premise SMS and voice gateway
+  driven over standard AT commands: messages never leave your network, and there
+  is no per-message provider fee
 - **WeChat / DingTalk / WhatsApp routing** — with escalation policy
 - **AI triage** — severity classification, cascade grouping, shift summaries
 - **On-site integration** — Niagara, BACnet, Modbus, DALI in one system
