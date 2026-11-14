@@ -1,0 +1,14 @@
+# never publish real credentials or local config
+.env
+*.key
+*.pem
+*.p12
+*.jks
+*.keystore
+id_rsa*
+sites.json
+baseline.json
+*.log
+__pycache__/
+*.pyc
+.DS_Store
