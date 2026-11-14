@@ -1,44 +1,149 @@
 # Niagara N4 BOX Protocol — Reading the Alarm Database
 
-> A practical, protocol-level guide to reading alarms from Tridium Niagara N4 / JACE
-> stations over the native BOX (Baja) HTTP + WebSocket interface.
->
-> Verified on Niagara 4.15 (Edge10 platform) and N4 JACE hardware.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+**Read alarms from a Tridium Niagara N4 / JACE station over the native BOX protocol.**
+Dependency-free Python. No oBIX license, no REST add-on, no third-party packages.
 
 ---
 
-## Why this guide exists
+## The problem
 
-Tridium documents oBIX and the REST automation API. It does **not** document the
-BOX protocol used by the Workbench and the browser UI — the same protocol the
-station's own JavaScript uses to render the alarm console.
+You have a Niagara station. You want its alarms in *your* system — a dashboard, a
+WeChat/DingTalk/Teams webhook, a ticketing queue, an overnight on-call rotation.
 
-Everything here was derived by reading the station's own front-end bundle and by
-observing real traffic. It is provided so integrators can build their own
-monitoring tooling without reverse-engineering it again.
+Niagara's built-in alarm notification sends email, SMS or SNMP traps. It does not
+give you a programmable feed, it is awkward to configure, and it cannot aggregate
+across stations.
 
----
+**There is no documented API for reading the alarm database.** oBIX does not
+expose it. The REST automation API does not expose it. The station's own UI reads
+it over a protocol called **BOX** — and that protocol is undocumented.
 
-## 1. What you need
-
-| Item | Value |
-|---|---|
-| Station address | `http://<station-ip>` (port 80, or 443 with TLS) |
-| Credentials | Any user with read access to the alarm service |
-| Python | 3.8+ (standard library only — no third-party packages) |
-
-The reference implementation in `scripts/n4_ok.py` uses nothing beyond the
-Python standard library: `http.client`, `hashlib`, `hmac`, `base64`, `json`.
+This repository documents it, with a working reference reader.
 
 ---
 
-## 2. Authentication: SCRAM-SHA512
+## What you can do with this
 
-**Form login will not work.** Posting `j_username` / `j_password` to `/login`
+| Use case | What it looks like |
+|:--|:--|
+| **Multi-station alarm rollup** | Poll 5 JACE stations every minute, merge into one feed |
+| **Custom notifications** | Push unacked alarms to WeChat Work / DingTalk / Slack / Teams |
+| **Ticketing integration** | Auto-create a ticket when a `Red_High` alarm appears |
+| **Overnight on-call** | Escalate to a phone call only for high-priority, unacknowledged alarms |
+| **Compliance archiving** | Pull the full alarm history into your own database before it ages out |
+| **Health monitoring** | Detect comm-loss alarms and page the network owner |
+
+All of it read-only. This repository never writes to a station.
+
+---
+
+## Why not oBIX / REST / SNMP?
+
+| Approach | Reads alarm DB | Extra licensing | Effort |
+|:--|:--:|:--:|:--|
+| **BOX (this repo)** | ✅ full database | none | low — plain HTTP |
+| oBIX | ❌ point values only | oBIX driver | medium |
+| REST automation API | ❌ point values only | REST add-on | medium |
+| SNMP trap receiver | ⚠️ only what is configured to trap | none | high — config per alarm |
+| Email parsing | ⚠️ fragile, text scraping | none | high — breaks on format change |
+
+The alarm database is its own service. It is reachable through the `alarm` BOX
+channel and nowhere else.
+
+---
+
+## Quick start
+
+```bash
+git clone https://github.com/jason912/niagara-n4-box-alarm.git
+cd niagara-n4-box-alarm
+
+NIAGARA_HOST=192.168.1.10 \
+NIAGARA_USER=admin \
+NIAGARA_PASS=yourpassword \
+python3 scripts/n4_ok.py 10
+```
+
+Output:
+
+```
+alarm records in database: 60    shown: 10
+note: limit=10 is a client-side trim; the station sent all 60 records
+
+timestamp                  state      class          prio     source
+---------------------------------------------------------------------------------
+2026-10-30T15:22:10.285+08:00 normal  Gline_Alarm    255      Services/AlarmService/...
+2026-10-30T15:22:15.368+08:00         Red_High       255      Drivers/SnmpNetwork/...
+```
+
+**JSON output**, for feeding another system:
+
+```bash
+NIAGARA_HOST=192.168.1.10 NIAGARA_USER=admin NIAGARA_PASS=yourpassword \
+python3 scripts/n4_ok.py --json
+```
+
+Minimal embedding:
+
+```python
+import sys; sys.path.insert(0, "scripts")
+from n4_ok import N4
+
+n = N4("192.168.1.10", 80, "admin", "yourpassword")
+n.login()
+n.session()
+data = n.alarms()
+
+for rec in data["r"]:
+    print(rec["s"])     # field list; use flatten() for a dict
+```
+
+---
+
+## Read this before you build on it
+
+Two facts change how you design a poller.
+
+**1. The station ignores paging.** `queryAlarmDatabase` accepts `l` (limit) and
+`o` (offset) without error but **returns the entire alarm database every time**.
+There is no server-side filtering and no predicate support. Narrowing results is
+entirely your job, client-side.
+
+**2. The alarm database has a finite capacity.** When it fills, the station drops
+the oldest records. **Events can be evicted between two polls.** A one-minute poll
+on a station producing steady alarms is fine; a ten-minute poll on a station
+generating bursts is not. Track the record count and the oldest timestamp to
+detect that records were lost.
+
+Everything else is in the guide below.
+
+---
+
+## Compatibility
+
+| Station | Version | Status |
+|:--|:--|:--|
+| Edge10 platform | Niagara 4.15 | ✅ verified, 60-record database read end to end |
+| N4 JACE | Niagara 4.15 | ✅ verified, 106-record database read end to end |
+| Other N4 builds | 4.10 – 4.14 | expected to work; BOX changed little across N4 |
+| Niagara AX / 3.x | — | ❌ different architecture, not applicable |
+
+If you verify a build not listed here, an issue with the version string is
+welcome.
+
+---
+
+## The guide
+
+### 1. Authentication: SCRAM-SHA512
+
+**Form login does not work.** Posting `j_username` / `j_password` to `/login`
 returns the login page again and never issues a `JSESSIONID`. N4 uses
-SCRAM-SHA512 challenge-response instead.
+SCRAM-SHA512 challenge-response.
 
-### Step 1 — Obtain an initial session
+#### Step 1 — Obtain an initial session
 
 ```http
 GET /prelogin
@@ -46,7 +151,7 @@ GET /prelogin
 
 Response sets `JSESSIONID`.
 
-### Step 2 — Client first message
+#### Step 2 — Client first message
 
 ```http
 POST /j_security_check/
@@ -65,7 +170,7 @@ r=<server-nonce>,s=<salt-base64>,i=<iterations>
 
 Iteration count is typically 10000.
 
-### Step 3 — Compute the proof
+#### Step 3 — Compute the proof
 
 ```python
 salted     = pbkdf2_hmac("sha256", password.encode(), b64decode(salt), iterations, 32)
@@ -79,7 +184,7 @@ client_sig = hmac(stored_key, auth_message.encode(), sha256)
 proof      = bytes(a ^ b for a, b in zip(client_key, client_sig))
 ```
 
-### Step 4 — Client final message
+#### Step 4 — Client final message
 
 ```http
 POST /j_security_check/
@@ -97,7 +202,7 @@ expected   = b64encode(hmac(server_key, auth_message.encode(), sha256))
 assert received_v == expected.decode()
 ```
 
-### Step 5 — Commit the session
+#### Step 5 — Commit the session
 
 ```http
 GET /j_security_check/
@@ -105,10 +210,10 @@ GET /j_security_check/
 
 Returns `302` and issues `JSESSIONID=<...>.node0`.
 
-**Only `JSESSIONID` matters.** A `niagara_userid` cookie alone is not
-sufficient — it is a UI hint, not an authenticated session.
+**Only `JSESSIONID` matters.** A `niagara_userid` cookie alone is not sufficient —
+it is a UI hint, not an authenticated session.
 
-### Two implementation notes
+Two implementation notes:
 
 1. **Sleep ~0.6 s between the two POSTs.** Sending them back to back fails on
    some platforms.
@@ -116,7 +221,7 @@ sufficient — it is a UI hint, not an authenticated session.
 
 ---
 
-## 3. The connection pitfall
+### 2. The connection pitfall
 
 Edge10-based stations have a defective HTTP keep-alive implementation. If you
 reuse a connection across the two SCRAM POSTs, the second one is reset with
@@ -138,7 +243,7 @@ This single change fixes the most common class of login failure.
 
 ---
 
-## 4. Creating a BOX session
+### 3. Creating a BOX session
 
 BOX operations are JSON messages posted to `/box/`.
 
@@ -172,7 +277,7 @@ Every subsequent message carries the session id in the top-level `"id"` field.
 
 ---
 
-## 5. Querying the alarm database
+### 4. Querying the alarm database
 
 ```http
 POST /box/
@@ -184,7 +289,7 @@ Cookie: JSESSIONID=<...>
        "b":{"t":"alarm:AlarmRecord","l":0,"o":0,"d":false,"c":true,"a":false}}]}
 ```
 
-### Parameters
+#### Parameters
 
 | Key | Meaning | Notes |
 |:--|:--|:--|
@@ -195,15 +300,7 @@ Cookie: JSESSIONID=<...>
 | `c` | Include column details | **Must be `true`**, otherwise no `s` array |
 | `a` | Include archived | `false` |
 
-### The limit trap
-
-`l` and `o` are accepted without error but have **no effect**. A single request
-always returns the entire alarm database. Client-side truncation only reduces
-what you print — it does not reduce network transfer or station load.
-
-Any code that assumes server-side paging is wrong.
-
-### Response shape
+#### Response shape
 
 ```json
 {
@@ -234,16 +331,16 @@ Any code that assumes server-side paging is wrong.
 - `r` — the records themselves
 - `s[].n` — field name, `s[].v` — value, `s[].dn` — display name
 
-### Ordering
+#### Ordering
 
 Records come back in **ascending timestamp order**. The newest alarm is the
 **last** element. Do not assume the opposite.
 
 ---
 
-## 6. Field values and escaping
+### 5. Field values and escaping
 
-### Baja string escaping
+#### Baja string escaping
 
 Values use a `$XX` escape scheme:
 
@@ -257,7 +354,7 @@ Values use a `$XX` escape scheme:
 | `$7b` | `{` |
 | `$7d` | `}` |
 
-### alarmData facets
+#### alarmData facets
 
 `alarmData` is a pipe-delimited facet list with typed prefixes:
 
@@ -277,13 +374,13 @@ Split on `|`, then on the first `:`.
 
 ---
 
-## 7. Which alarm-channel operations exist
+### 6. Which alarm-channel operations exist
 
 The `alarm` box channel supports only a few keys. Everything else returns
 `Unsupported Key`.
 
 | Key | Works | Purpose |
-|:--|:--|:--|
+|:--|:--:|:--|
 | `queryAlarmDatabase` | ✅ | Read alarm records |
 | `getAlarmFields` | ✅ | List all field names |
 | `getRecordCount` | ⚠️ | Requires a specific argument encoding |
@@ -298,7 +395,7 @@ getConsoles  listConsoles  getConsoleList  consoles  getAlarmConsoles
 describe  keys  help  props  getFields  getAlarmClassMap  getSourceMap
 ```
 
-### There is no "alarm console" concept on the wire
+#### There is no "alarm console" concept on the wire
 
 Alarm consoles are a **UI notion**. They are filtered views rendered in the
 browser on top of the single alarm database. The filtering happens in JavaScript,
@@ -309,7 +406,7 @@ If you need console-like behaviour, fetch the full database and filter locally b
 
 ---
 
-## 8. Filtering must be client-side
+### 7. Filtering must be client-side
 
 Since `l` and `o` are ignored, and there is no query predicate, the only way to
 narrow results is post-filtering:
@@ -326,7 +423,7 @@ regardless.
 
 ---
 
-## 9. WebSocket variant
+### 8. WebSocket variant
 
 For continuous subscriptions, upgrade `/wsbox` instead of polling `/box/`.
 
@@ -347,7 +444,7 @@ Create the session over HTTP first, then attach with the WebSocket.
 
 ---
 
-## 10. Building a channels for station components (makessc)
+### 9. Building a channel for station components (makessc)
 
 Reading component slots (point values, status flags) uses a separate path.
 
@@ -386,7 +483,7 @@ Once the channel is open:
 
 ---
 
-## 11. Checklist for a new station
+### 10. Checklist for a new station
 
 1. `ping` the address.
 2. Confirm port 80 is open.
@@ -408,42 +505,67 @@ Failure messages and their causes:
 
 ---
 
-## 12. Reference implementation
+### 11. Building a poller that does not lose events
 
-`scripts/n4_ok.py` is a complete, dependency-free reader.
+If you are going to run this on a schedule, three things matter more than the
+protocol details.
 
-```bash
-python3 n4_ok.py 20
-python3 n4_ok.py --json
-NIAGARA_HOST=192.168.1.10 NIAGARA_USER=<user> NIAGARA_PASS=<password> python3 n4_ok.py 5
-```
+**Keep the interval short enough.** The database drops its oldest records when
+full. A station with a 60-record database and a one-minute poll can only lose
+events if more than 60 alarms occur inside that minute.
 
-All connection state, SCRAM handshake, BOX framing, and field decoding are
-contained in a single file of roughly 350 lines.
+**Detect eviction.** Each poll, compare the record count against its maximum and
+look at the oldest timestamp. If the oldest record is newer than the newest
+record from your previous poll, records were dropped between polls. Log that.
+
+**Queue before you send.** If your downstream notification channel is down, do
+not discard the alarms. Persist them locally and flush when the channel
+recovers — the same behaviour Niagara's own notification service has.
 
 ---
 
-## 13. Notes and caveats
+### 12. Notes and caveats
 
 - **Read-only.** Nothing here writes to the station. `ackAlarms` and
   `clearRecords` exist but are deliberately not exercised.
-- **Alarm database capacity is finite.** When full, the station drops the oldest
-  records. A monitoring loop that polls infrequently can miss events that were
-  evicted between polls. Track the record count and the oldest timestamp to
-  detect this.
 - **Protocol version drifts.** Send `2.3`, tolerate `2.4`.
 - **Session ids are single-use.** Create one per process run.
-- **Polling frequency** trades freshness against station load. With a full
-  database returned every time, a short interval is not free.
+- **Polling frequency costs the station.** Every request ships the whole
+  database. A short interval is not free.
+
+---
+
+## Repository layout
+
+```
+README.md            this document
+LICENSE              MIT
+scripts/n4_ok.py     reference reader, standard library only
+```
+
+---
+
+## Contributing
+
+Corrections, additional verified station models and failure-mode reports are
+welcome. Please open an issue with the Niagara build string and what you
+observed.
+
+If you found this useful, a ⭐ helps other integrators find it.
 
 ---
 
 ## Contact
 
-If you need the full reference reader with multi-station support, or want to
-discuss integration work, get in touch:
+Need multi-station aggregation, a production poller, or integration work?
 
 **jason.zhang@gline-net.com**
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE).
 
 ---
 
