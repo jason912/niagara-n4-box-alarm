@@ -5,7 +5,7 @@
 [![Standard library only](https://img.shields.io/badge/dependencies-none-success.svg)](#)
 
 **Read alarms from a Tridium Niagara N4 / JACE station over the native BOX protocol.**
-Dependency-free Python. No oBIX license, no REST add-on, no third-party packages.
+Dependency-free Python. No oBIX driver, no REST add-on, no third-party packages.
 
 Structured JSON out, which means it drops straight into an agent or an LLM
 pipeline: **classify severity, group cascade alarms, summarise a shift, draft the
@@ -70,7 +70,7 @@ WeChat/DingTalk/WhatsApp webhook, a ticketing queue, an overnight on-call rotati
 
 Niagara's built-in alarm notification sends email, SMS or SNMP traps. It does not
 give you a programmable feed, it is awkward to configure, it cannot aggregate
-across stations, and **the SMS option is a separately licensed feature**.
+across stations, and **the SMS option is a licensed add-on**.
 
 **There is no documented API for reading the alarm database.** oBIX does not
 expose it. The REST automation API does not expose it. The station's own UI reads
@@ -96,24 +96,27 @@ All of it read-only. This repository never writes to a station.
 
 ---
 
-## Drop your Niagara SMS license
+## Routing alarms without the licensed SMS add-on
 
-Niagara's SMS notification is a **paid add-on**. If your only requirement is
-"an alarm fires, a phone rings", you do **not** need that add-on — this reader
-plus a gateway you already own will get you there:
+Niagara's SMS notification is a licensed add-on, and for many sites it is the
+right tool. But if what you actually need is "an alarm fires, a phone rings",
+there is another route: read the alarms yourself and hand them to whichever
+gateway you already run.
 
 ```
-Niagara SMS add-on:   per-station license  +  modem  +  SIM  +  per-alarm config
-This route:           this reader  +  any SMS/voice gateway you already own
+Licensed add-on:   per-station licence  +  modem  +  SIM  +  per-alarm config
+This route:        this reader  +  any SMS/voice gateway you already own
 ```
 
-You keep full control of the message format, the routing rules and the escalation
-policy. Nothing about it is tied to a Tridium license, and nothing about it stops
-you from using the official add-on alongside it if that suits you better.
+What you gain is control, not just cost: message format, routing rules, and the
+escalation policy are yours. Nothing here is tied to a Tridium licence, and
+nothing here conflicts with the official add-on — plenty of sites run both,
+using the add-on for the alarms that must have a Tridium-supported path and this
+reader for the ones that go to your own systems.
 
-There is also an operational reason to prefer it: messages leave through a
-gateway you control, so alarm text and site identifiers never pass through a
-third-party messaging provider unless you choose one.
+There is also a data-handling argument: messages leave through a gateway you
+control, so alarm text and site identifiers never pass through a third-party
+messaging provider unless you choose one.
 
 See [Notification channels](#notification-channels) for wiring it to SMS, voice
 calls, WhatsApp, WeChat or anything else.
@@ -127,7 +130,7 @@ calls, WhatsApp, WeChat or anything else.
 | **BOX (this repo)** | ✅ full database | none | low — plain HTTP |
 | oBIX | ❌ point values only | oBIX driver | medium |
 | REST automation API | ❌ point values only | REST add-on | medium |
-| Niagara SMS notification | ⚠️ what you route to it | **SMS license** | medium — per alarm config |
+| Niagara SMS notification | ⚠️ what you route to it | SMS add-on | medium — per alarm config |
 | SNMP trap receiver | ⚠️ only what is configured to trap | none | high — config per alarm |
 | Email parsing | ⚠️ fragile, text scraping | none | high — breaks on format change |
 
@@ -609,8 +612,8 @@ recovers — the same behaviour Niagara's own notification service has.
 ## Notification channels
 
 The reader hands you a list of alarms. What you do with them is open. All of the
-following are plain outbound HTTP or a serial port — nothing needs a Tridium
-license.
+following are plain outbound HTTP or a serial port — none of them require a
+Tridium licence to implement.
 
 | Channel | How | Notes |
 |:--|:--|:--|
