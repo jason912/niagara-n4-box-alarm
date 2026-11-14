@@ -7,6 +7,57 @@
 **Read alarms from a Tridium Niagara N4 / JACE station over the native BOX protocol.**
 Dependency-free Python. No oBIX license, no REST add-on, no third-party packages.
 
+Structured JSON out, which means it drops straight into an agent or an LLM
+pipeline: **classify severity, group cascade alarms, summarise a shift, draft the
+first-line response.** Nothing about the station is exposed to the model except
+the alarm records you hand it.
+
+---
+
+## Why this matters now: alarms are the last thing AI cannot see
+
+Building operators are wiring assistants into energy data, work orders and
+schedules. The one feed they cannot get is the alarm feed — because Niagara has
+no documented API for it. That gap is why this repository exists.
+
+The reader hands you each alarm as a clean object:
+
+```json
+{
+  "timestamp": "2026-10-30T15:22:15.368+08:00",
+  "uuid": "d0402dcc-5ea6-4658-a781-a924f761d87d",
+  "sourceState": "offnormal",
+  "ackState": "unacked",
+  "alarmClass": "Red_High",
+  "priority": "255",
+  "source": "Drivers/SnmpNetwork/.../points/UPS_in_battery_mode",
+  "alarmData": {
+    "msgText": "UPS battery time is increasing. Please check.",
+    "Count": 68
+  }
+}
+```
+
+That is enough context for a useful prompt without shipping the station.
+
+### What models are genuinely good at here
+
+| Task | Why it works |
+|:--|:--|
+| **Normalising message text** | Alarms arrive as free text with vendor-specific wording; a model rewrites them into one consistent form |
+| **Deduplicating cascades** | One failed controller raises forty point alarms; a model groups them under one root event |
+| **Classifying severity** | Rules miss nuance — "UPS on battery" at 2 a.m. is not the same as at 2 p.m. |
+| **Drafting the first-line response** | "Check the switch port; this point faulted at the same time as three others on the same trunk" |
+| **Summarising a shift** | "Twelve alarms overnight, nine were the same chiller restarting" |
+
+### What they must not be trusted with
+
+- Deciding whether an alarm is a real safety event
+- Any action that writes to the station
+- Anything where a wrong answer is expensive and unverifiable
+
+Keep a human in the loop for the last mile. The model triages; a person decides.
+
 ---
 
 ## The problem
@@ -581,12 +632,10 @@ Two design notes:
 
 ---
 
-## AI-assisted alarm triage
+## AI-assisted alarm triage in practice
 
-Because this reader produces structured JSON, it plugs into an LLM workflow
-without any glue layer.
-
-A practical pattern:
+Because the reader emits structured JSON, it plugs into an LLM workflow without a
+glue layer.
 
 ```
 poller  →  new alarms (JSON)
@@ -594,6 +643,11 @@ poller  →  new alarms (JSON)
         →  model returns: severity, likely cause, suggested first action
         →  route: chat message for low, ticket for medium, call for high
 ```
+
+The section at the top of this document lists what models do well and what they
+should not touch. The practical value is not a smarter alarm — it is a **smaller
+number of alarms a human has to read**, grouped and pre-digested, with the obvious
+noise already removed.
 
 What models are actually good at here:
 
