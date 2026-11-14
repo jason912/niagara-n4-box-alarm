@@ -1,6 +1,8 @@
 # Niagara N4 BOX Protocol — Reading the Alarm Database
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.8+](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/)
+[![Standard library only](https://img.shields.io/badge/dependencies-none-success.svg)](#)
 
 **Read alarms from a Tridium Niagara N4 / JACE station over the native BOX protocol.**
 Dependency-free Python. No oBIX license, no REST add-on, no third-party packages.
@@ -10,11 +12,11 @@ Dependency-free Python. No oBIX license, no REST add-on, no third-party packages
 ## The problem
 
 You have a Niagara station. You want its alarms in *your* system — a dashboard, a
-WeChat/DingTalk/Teams webhook, a ticketing queue, an overnight on-call rotation.
+WeChat/DingTalk/WhatsApp webhook, a ticketing queue, an overnight on-call rotation.
 
 Niagara's built-in alarm notification sends email, SMS or SNMP traps. It does not
-give you a programmable feed, it is awkward to configure, and it cannot aggregate
-across stations.
+give you a programmable feed, it is awkward to configure, it cannot aggregate
+across stations, and **the SMS option is a separately licensed feature**.
 
 **There is no documented API for reading the alarm database.** oBIX does not
 expose it. The REST automation API does not expose it. The station's own UI reads
@@ -29,13 +31,32 @@ This repository documents it, with a working reference reader.
 | Use case | What it looks like |
 |:--|:--|
 | **Multi-station alarm rollup** | Poll 5 JACE stations every minute, merge into one feed |
-| **Custom notifications** | Push unacked alarms to WeChat Work / DingTalk / Slack / Teams |
+| **Custom notifications** | Push unacked alarms to WeChat Work / DingTalk / WhatsApp / Slack / Teams |
 | **Ticketing integration** | Auto-create a ticket when a `Red_High` alarm appears |
 | **Overnight on-call** | Escalate to a phone call only for high-priority, unacknowledged alarms |
 | **Compliance archiving** | Pull the full alarm history into your own database before it ages out |
 | **Health monitoring** | Detect comm-loss alarms and page the network owner |
+| **AI triage** | Feed alarms to an LLM for classification, summarisation and first-line diagnosis |
 
 All of it read-only. This repository never writes to a station.
+
+---
+
+## Drop your Niagara SMS license
+
+Niagara's SMS notification is a **paid add-on**. If all you need is "an alarm
+happens, my phone rings", this repository replaces that line item entirely:
+
+```
+Before:  Niagara SMS license  +  modem  +  carrier SIM  +  per-seat config
+After:   this reader  +  any SMS/voice gateway you already own
+```
+
+You keep full control of the message format, the routing rules and the escalation
+policy. Nothing about it is tied to Tridium licensing.
+
+See [Notification channels](#notification-channels) for wiring it to SMS, voice
+calls, WhatsApp, WeChat or anything else.
 
 ---
 
@@ -46,6 +67,7 @@ All of it read-only. This repository never writes to a station.
 | **BOX (this repo)** | ✅ full database | none | low — plain HTTP |
 | oBIX | ❌ point values only | oBIX driver | medium |
 | REST automation API | ❌ point values only | REST add-on | medium |
+| Niagara SMS notification | ⚠️ what you route to it | **SMS license** | medium — per alarm config |
 | SNMP trap receiver | ⚠️ only what is configured to trap | none | high — config per alarm |
 | Email parsing | ⚠️ fragile, text scraping | none | high — breaks on format change |
 
@@ -524,14 +546,70 @@ recovers — the same behaviour Niagara's own notification service has.
 
 ---
 
-### 12. Notes and caveats
+## Notification channels
 
-- **Read-only.** Nothing here writes to the station. `ackAlarms` and
-  `clearRecords` exist but are deliberately not exercised.
-- **Protocol version drifts.** Send `2.3`, tolerate `2.4`.
-- **Session ids are single-use.** Create one per process run.
-- **Polling frequency costs the station.** Every request ships the whole
-  database. A short interval is not free.
+The reader hands you a list of alarms. What you do with them is open. All of the
+following are plain outbound HTTP or a serial port — nothing needs a Tridium
+license.
+
+| Channel | How | Notes |
+|:--|:--|:--|
+| **SMS** | HTTP API of any SMS provider, or a GSM modem on a serial port | see note below |
+| **Voice call** | Same providers usually offer TTS calls; or an LTE module with AT commands | ring the phone for `Red_High` only |
+| **WeChat Work** | `POST` a `webhook/send` JSON body to your bot URL | group robot, no auth setup |
+| **DingTalk** | Same pattern, `oapi.dingtalk.com/robot/send` | markdown message type renders well |
+| **WhatsApp** | Cloud API or a local gateway (e.g. a phone running a bridge) | template messages needed for cold sends |
+| **Telegram** | `api.telegram.org/bot<token>/sendMessage` | easiest to start with |
+| **Slack / Teams** | Incoming webhook URL | incoming webhook is a two-minute setup |
+| **Email** | SMTP | the one thing Niagara already does well |
+| **HTTP POST** | Any endpoint you control | the generic escape hatch |
+
+Two design notes:
+
+- **Escalate, do not broadcast.** Send a chat message for everything;
+  place a voice call only for unacknowledged `Red_High` alarms that have been
+  open longer than N minutes. Calls wake people up and cost attention.
+- **Rate-limit and coalesce.** One message per event will flood a chat channel
+  during a network outage. Group alarms raised inside the same minute into a
+  single message with a count.
+
+---
+
+## AI-assisted alarm triage
+
+Because this reader produces structured JSON, it plugs into an LLM workflow
+without any glue layer.
+
+A practical pattern:
+
+```
+poller  →  new alarms (JSON)
+        →  prompt: alarm class, source, message text, recent history
+        →  model returns: severity, likely cause, suggested first action
+        →  route: chat message for low, ticket for medium, call for high
+```
+
+What models are actually good at here:
+
+| Task | Why it works |
+|:--|:--|
+| **Normalising message text** | Alarms arrive as free text with vendor-specific wording; a model rewrites them into one consistent form |
+| **Deduplicating cascades** | One failed controller raises forty point alarms; a model groups them under one root event |
+| **Classifying severity** | Rules miss nuance ("UPS on battery" at 2 a.m. is not the same as at 2 p.m.) |
+| **Drafting the first-line response** | "Check the network switch port, this point went fault at the same time as three others on the same trunk" |
+| **Summarising a shift** | "Twelve alarms overnight, nine were the same chiller restarting" |
+
+What they are **not** good at, and should not be trusted with:
+
+- Deciding whether an alarm is a real safety event
+- Any action that touches the station
+- Anything where a wrong answer is expensive and unverifiable
+
+Keep a human in the loop for the last mile. The model triages; a person decides.
+
+The alarm JSON includes `uuid`, `timestamp`, `alarmClass`, `priority`,
+`sourceState`, `ackState` and a decoded `alarmData` facet map — enough context for
+a useful prompt without shipping the whole station.
 
 ---
 
@@ -555,9 +633,19 @@ If you found this useful, a ⭐ helps other integrators find it.
 
 ---
 
-## Contact
+## Need the pieces that are not in this repo?
 
-Need multi-station aggregation, a production poller, or integration work?
+This repository stops at "you have the alarms as JSON". Building the rest —
+poller, queue, routing rules, SMS and voice gateways — is integration work.
+
+If you want help with any of it:
+
+- **Multi-station aggregation** — one feed from many JACE / Edge stations
+- **SMS and voice delivery** — including a self-hosted LTE module that speaks
+  AT commands directly, so no SMS license and no per-message provider markup
+- **WeChat / DingTalk / WhatsApp routing** — with escalation policy
+- **AI triage** — severity classification, cascade grouping, shift summaries
+- **On-site integration** — Niagara, BACnet, Modbus, DALI in one system
 
 **jason.zhang@gline-net.com**
 
