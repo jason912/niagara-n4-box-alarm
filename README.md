@@ -20,6 +20,9 @@ Building operators are wiring assistants into energy data, work orders and
 schedules. The one feed they cannot get is the alarm feed — because Niagara has
 no documented API for it. That gap is why this repository exists.
 
+If you are building an assistant that answers *"what is wrong with this building
+right now"*, the alarm feed is the missing input. This is how you get it.
+
 The reader hands you each alarm as a clean object:
 
 ```json
@@ -670,6 +673,82 @@ Keep a human in the loop for the last mile. The model triages; a person decides.
 The alarm JSON includes `uuid`, `timestamp`, `alarmClass`, `priority`,
 `sourceState`, `ackState` and a decoded `alarmData` facet map — enough context for
 a useful prompt without shipping the whole station.
+
+### Prompt pack
+
+Three prompts that work on the reader's output as-is. Copy them, replace nothing
+but the alarm array, and check the results against your own history before you
+put them on a live feed.
+
+**1. Collapse a cascade into root events**
+
+```
+You are given alarms from one station covering the last 15 minutes.
+Several of them are consequences of a single fault.
+
+Group them. Return JSON only, no prose:
+{
+  "groups": [
+    {
+      "root_cause": "one sentence, plain language",
+      "alarm_uuids": ["...", "..."],
+      "confidence": 0.0
+    }
+  ],
+  "unclassified": ["uuid", "uuid"]
+}
+
+Rules:
+- Only use uuids present in the input. Never invent one.
+- If two alarms share a source path prefix, they are probably related — but
+  say so with a lower confidence, not a higher one.
+- If grouping is unclear, put the alarm in unclassified instead of guessing.
+
+Alarms:
+<PASTE THE JSON ARRAY HERE>
+```
+
+**2. Decide what a human actually needs to see**
+
+```
+You are triaging alarms for an on-call engineer at 03:00.
+
+For each alarm decide one of: page_now, ticket, digest.
+Base the decision on:
+- alarmClass and priority
+- how many alarms share the same source
+- whether the same alarm repeated within the window
+
+Return JSON only:
+{"decisions": [{"uuid": "...", "route": "page_now|ticket|digest", "why": "max 12 words"}]}
+
+Be conservative. When evidence is thin, downgrade one level rather than upgrade.
+
+Alarms:
+<PASTE THE JSON ARRAY HERE>
+```
+
+**3. Write the shift handover**
+
+```
+Write a handover note for the next shift from these alarms.
+
+Format:
+- Headline: one sentence, what happened tonight
+- Repeated issues: bullets, each naming the source and how many times
+- Still open: bullets, unacked alarms only
+- Suggested first checks: max three bullets
+
+Do not speculate about causes that are not supported by the alarm text.
+If the input is quiet, say so in one line and stop.
+
+Alarms:
+<PASTE THE JSON ARRAY HERE>
+```
+
+What to check before trusting any of this: run the prompts over a month of
+archived alarms where you already know the answer. If a prompt invents a uuid, a
+cause, or an alarm that was not there, do not deploy it.
 
 ---
 
